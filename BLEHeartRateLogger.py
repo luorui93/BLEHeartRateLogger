@@ -29,7 +29,6 @@ import configparser
 logging.basicConfig(format="%(asctime)-15s  %(message)s")
 log = logging.getLogger("BLEHeartRateLogger")
 
-
 def parse_args():
     """
     Command line argument parsing
@@ -40,13 +39,16 @@ def parse_args():
     parser.add_argument("-g", metavar='PATH', type=str, help="gatttool path (default: system available)", default="gatttool")
     parser.add_argument("-o", metavar='FILE', type=str, help="Output filename of the database (default: none)")
     parser.add_argument("-H", metavar='HR_HANDLE', type=str, help="Gatttool handle used for HR notifications (default: none)")
+    parser.add_argument("-C", metavar="HR_CTL_HANDLE", type=str, help="Gatttool ctl handle to write request (default: none)")
     parser.add_argument("-v", action='store_true', help="Verbose output")
     parser.add_argument("-d", action='store_true', help="Enable debug of gatttool")
 
-    confpath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "BLEHeartRateLogger.conf")
+    confpath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "tickr.conf")
     if os.path.exists(confpath):
 
         config = configparser.ConfigParser()
+        ##Enable case sensitive
+        config.optionxform=str
         config.read([confpath])
         config = dict(config.items("config"))
 
@@ -99,7 +101,7 @@ def interpret(data):
         res["rr"] = []
         while i < len(data):
             # Note: Need to divide the value by 1024 to get in seconds
-            res["rr"].append((data[i + 1] << 8) | data[i])
+            res["rr"].append(((data[i + 1] << 8) | data[i])/1024.)
             i += 2
 
     return res
@@ -172,7 +174,7 @@ def get_ble_hr_mac():
     return addr
 
 
-def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_handle=None, debug_gatttool=False):
+def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_handle=None, hr_ctl_handle=None, debug_gatttool=False):
     """
     main routine to which orchestrates everything
     """
@@ -191,7 +193,6 @@ def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_h
             sq.close()
             return
 
-    hr_ctl_handle = None
     retry = True
     while retry:
 
@@ -234,15 +235,17 @@ def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_h
             except pexpect.TIMEOUT:
                 log.error("Couldn't read battery level.")
 
-        if hr_handle == None:
+        if hr_handle == None and hr_ctl_handle == None:
             # We determine which handle we should read for getting the heart rate
             # measurement characteristic.
+            log.info("Querying the handle...")
             gt.sendline("char-desc")
 
             while 1:
                 try:
-                    gt.expect(r"handle: (0x[0-9a-f]+), uuid: ([0-9a-f]{8})", timeout=10)
+                    gt.expect(r"handle: (0x[0-9a-f]+), uuid: ([0-9a-f]{8})", timeout=60)
                 except pexpect.TIMEOUT:
+                    log.error("Querying handle reached timeout.")
                     break
                 handle = gt.match.group(1).decode()
                 uuid = gt.match.group(2).decode()
@@ -255,7 +258,7 @@ def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_h
                     hr_handle = handle
 
             if hr_handle == None:
-                log.error("Couldn't find the heart rate measurement handle?!")
+                log.error("Couldn't find the heart rate measurement handle.")
                 return
 
         if hr_ctl_handle:
@@ -306,6 +309,7 @@ def main(addr=None, sqlfile=None, gatttool="gatttool", check_battery=False, hr_h
 
             if sqlfile is None:
                 log.info("Heart rate: " + str(res["hr"]))
+                log.info("RR-Intervals: " + str(res["rr"]))
                 continue
 
             # Push the data to the database
@@ -339,8 +343,8 @@ def cli():
         log.setLevel(logging.DEBUG)
     else:
         log.setLevel(logging.INFO)
-
-    main(args.m, args.o, args.g, args.b, args.H, args.d)
+    
+    main(args.m, args.o, args.g, args.b, args.H, args.C, args.d)
 
 
 if __name__ == "__main__":
